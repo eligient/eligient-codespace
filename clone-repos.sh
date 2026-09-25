@@ -22,6 +22,8 @@ fi
 
 if [ -f "${script_folder}/repos-to-clone.list" ]; then
     while IFS= read -r repository; do
+        repository="${repository%$'\r'}"
+        [ -z "$repository" ] && continue
         clone-repo "$repository"
     done < "${script_folder}/repos-to-clone.list"
 fi
