@@ -55,6 +55,12 @@ services:
       context: ../backend
     image: eligient-backend:local
     network_mode: host
+    # `::` (dual-stack), not the Dockerfile's 0.0.0.0: in this codespace
+    # `localhost` resolves to ::1 first, and VS Code's port forwarding
+    # connects to localhost -- an IPv4-only bind refuses it, so the
+    # browser gets ERR_CONNECTION_REFUSED on :8000 while :3000 (Next.js
+    # already listens on both) works.
+    command: ["uv", "run", "uvicorn", "main:app", "--host", "::", "--port", "8000", "--reload"]
     env_file:
       - ../backend/.env
     environment:
@@ -77,10 +83,15 @@ services:
     env_file:
       - ../frontend/.env.local
     environment:
-      # Overrides .env.local so the browser calls the backend published
-      # above rather than whatever was last set for local/native dev.
-      NEXT_PUBLIC_API_BASE: http://localhost:8000
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      # Overrides .env.local. The browser calls the backend same-origin at
+      # /_backend, which this dev server proxies to the backend above
+      # (next.config.mjs rewrites). In a browser-based Codespace the page is
+      # on "<codespace>-3000.app.github.dev", where localhost:8000 would be
+      # the viewer's own machine; this way only port 3000 is forwarded and
+      # port 8000 can stay private.
+      NEXT_PUBLIC_API_BASE: /_backend
+      NEXT_PUBLIC_API_URL: /_backend
+      DEV_BACKEND_PROXY_TARGET: http://localhost:8000
       PORT: "3000"
     volumes:
       - ../frontend:/app
