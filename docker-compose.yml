@@ -1,0 +1,96 @@
+# NOTE on networking: this codespace's Docker daemon has iptables FORWARD
+# rules scoped to the default `docker0` bridge only, so containers on a
+# compose-created custom bridge network can't reach each other (verified:
+# cross-container TCP just times out). `network_mode: host` sidesteps that
+# entirely -- every service shares the host's network namespace, so they
+# talk to each other over `localhost` exactly like the non-Docker dev setup
+# in start-dev.sh. That's why there's no top-level `networks:` and no
+# `ports:` mappings below: each service's own listening port *is* the host
+# port. Stop any natively-running backend/frontend first (they'll otherwise
+# collide with these on 8000/3000).
+services:
+  postgres:
+    image: postgres:18  # matches the Render DB's version (see backend/.env)
+    network_mode: host
+    command: ["-c", "port=5433"]
+    environment:
+      POSTGRES_USER: eligient
+      POSTGRES_PASSWORD: eligient
+      POSTGRES_DB: eligient
+    volumes:
+      # PG 18+ convention: mount the parent dir, not .../data (see
+      # https://github.com/docker-library/postgres/pull/1259).
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      # Host 5433, not 5432, so this never collides with the eligient-test-pg
+      # container tests use on host 5432.
+      test: ["CMD-SHELL", "pg_isready -U eligient -d eligient -p 5433"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One-shot: applies an optional baseline dump then the tracked migrations
+  # (see docker/migrate-entrypoint.sh), and exits. Never re-runs on a normal
+  # `docker compose up` once it has exited 0 for the current containers, so
+  # migrations aren't reapplied on every start.
+  migrate:
+    build:
+      context: ../backend
+    image: eligient-backend:local
+    network_mode: host
+    entrypoint: ["/bin/sh", "/migrate-entrypoint.sh"]
+    volumes:
+      - ../backend:/app
+      - backend_venv:/app/.venv
+      - ./docker/migrate-entrypoint.sh:/migrate-entrypoint.sh:ro
+    environment:
+      DATABASE_URL: postgresql://eligient:eligient@localhost:5433/eligient
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build:
+      context: ../backend
+    image: eligient-backend:local
+    network_mode: host
+    env_file:
+      - ../backend/.env
+    environment:
+      # Overrides whatever is in backend/.env so the dev stack always talks
+      # to the local Postgres above, never the remote Render database.
+      DATABASE_URL: postgresql://eligient:eligient@localhost:5433/eligient
+      ALLOWED_ORIGINS: http://localhost:3000
+      FRONTEND_URL_LOCAL: http://localhost:3000
+    volumes:
+      - ../backend:/app
+      - backend_venv:/app/.venv
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: ../frontend
+    network_mode: host
+    env_file:
+      - ../frontend/.env.local
+    environment:
+      # Overrides .env.local so the browser calls the backend published
+      # above rather than whatever was last set for local/native dev.
+      NEXT_PUBLIC_API_BASE: http://localhost:8000
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      PORT: "3000"
+    volumes:
+      - ../frontend:/app
+      - frontend_node_modules:/app/node_modules
+      - frontend_next:/app/.next
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  backend_venv:
+  frontend_node_modules:
+  frontend_next:
